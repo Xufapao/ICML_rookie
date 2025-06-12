@@ -1,54 +1,16 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.models import resnet50, ResNet50_Weights
 from tqdm import tqdm
 import os
 import numpy as np
 from PIL import Image
 import argparse
+from image_preprocessing import PreprocessedImageFolder
+from model import ResNetSwinTransformer
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# ============== Dataset ==============
-class ImageFolder(Dataset):
-    def __init__(self, root, annotation_path=None, transform=None):
-        super().__init__()
-        self.root = root
-        self.transform = transform
-        if annotation_path is not None:
-            with open(annotation_path, 'r') as f:
-                data_dir = [line.strip().split(' ') for line in f]
-            data_dir = [(x[0], int(x[1])) for x in data_dir]
-        else:
-            data_dir = sorted(os.listdir(root))
-            data_dir = [(x, None) for x in data_dir]
-        self.data_dir = data_dir
-        self.total_len = len(self.data_dir)
-
-    def __len__(self):
-        return self.total_len
-
-    def __getitem__(self, idx):
-        image_path, label = os.path.join(self.root, self.data_dir[idx][0]), self.data_dir[idx][1]
-        image = Image.open(image_path).convert('RGB')
-        if self.transform:
-            image = self.transform(image)
-        image_name = self.data_dir[idx][0]
-        label = image_name if label is None else label
-        return image, label
-
-# ============== Model ==============
-class Net(nn.Module):
-    def __init__(self, num_classes, pretrain):
-        super().__init__()
-        weights = ResNet50_Weights.IMAGENET1K_V2 if pretrain else None
-        self.base_net = resnet50(weights=weights)
-        self.base_net.fc = nn.Linear(self.base_net.fc.in_features, num_classes)
-
-    def forward(self, x):
-        return self.base_net(x)
 
 # ============== Training ==============
 def training(model, optimizer, train_loader, now_epoch, num_epochs):
@@ -126,9 +88,16 @@ if __name__ == '__main__':
     parser.add_argument('--testonly', action='store_true', default=False)
     parser.add_argument('--loadfrom', type=str, default='./model_save/best.pth')
     parser.add_argument('--result_path', type=str, default='./result.txt')
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--num_epochs', type=int, default=25)
+    parser.add_argument('--learning_rate', type=float, default=1e-4)
     args = parser.parse_args()
 
-    model = Net(pretrain=True, num_classes=6)
+    # 创建模型保存目录
+    os.makedirs(args.modelroot, exist_ok=True)
+
+    # 初始化模型
+    model = ResNetSwinTransformer(num_classes=6, pretrain=True)
     model = model.to(device)
 
     transform_train = transforms.Compose([
@@ -146,37 +115,40 @@ if __name__ == '__main__':
     ])
 
     if not args.testonly:
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.05)
         train_loader = DataLoader(
-            ImageFolder(
+            PreprocessedImageFolder(
                 root=os.path.join(args.dataroot, 'images/train'),
                 annotation_path=os.path.join(args.dataroot, 'labels/train.txt'),
                 transform=transform_train
             ),
-            batch_size=8,
-            num_workers=8,
-            shuffle=True
+            batch_size=args.batch_size,
+            num_workers=2,
+            shuffle=True,
+            pin_memory=True
         )
         val_loader = DataLoader(
-            ImageFolder(
-                root=os.path.join(args.dataroot, './images/train'),
+            PreprocessedImageFolder(
+                root=os.path.join(args.dataroot, 'images/train'),
                 annotation_path=os.path.join(args.dataroot, 'labels/val.txt'),
                 transform=transform_val
             ),
-            batch_size=8,
-            num_workers=8,
-            shuffle=False
+            batch_size=args.batch_size,
+            num_workers=2,
+            shuffle=False,
+            pin_memory=True
         )
-        run(model, optimizer, train_loader, val_loader, 25, args.modelroot)
+        run(model, optimizer, train_loader, val_loader, args.num_epochs, args.modelroot)
     else:
         test_loader = DataLoader(
-            ImageFolder(
+            PreprocessedImageFolder(
                 root=args.dataroot,
                 transform=transform_val
             ),
-            batch_size=8,
-            num_workers=8,
-            shuffle=False
+            batch_size=args.batch_size,
+            num_workers=2,
+            shuffle=False,
+            pin_memory=True
         )
         model.load_state_dict(torch.load(args.loadfrom))
         test(model, test_loader, args.result_path) 

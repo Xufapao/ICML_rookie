@@ -77,7 +77,7 @@ class SoundDataset(Dataset):
         img_path = os.path.join(self.root_dir, 'images', 'train', img_name)
         
         # 读取图像
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(img_path)
         
         # 应用转换
         if self.transform:
